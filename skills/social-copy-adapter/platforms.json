@@ -1,0 +1,99 @@
+{
+  "_about": "Per-platform copy limits for scripts/adapt_copy.py. Each platform's `limits` object is what the script reads, key for key; everything else here is provenance for people. Edit a number in `limits` and the script uses it on the next run.",
+  "_data_origin": "The `limits` values are copied unchanged from SocialForge's copy adapter (scripts/adapt_copy.py PLATFORM_LIMITS, SocialForge v1.26.0). SocialForge carries no source URLs or check dates for them. The sources and notes below were added when this skill was extracted, on 2026-10-04.",
+  "_checked_means": "`checked` is the date the entry was last compared against `source`. When `source` is \"SocialForge data, unsourced\", it is the date a check was attempted and no readable primary page was found. It does not mean the numbers were confirmed.",
+  "_fields": {
+    "limits.char_limit": "Hard limit for the post text. The script measures it with Python len() (code points), see SKILL.md for where platforms count differently.",
+    "limits.fold_at": "Characters assumed visible before a 'see more' fold. Only used to fill `hook_visible` in the output.",
+    "limits.optimal_limit": "If present, the script cuts copy to this instead of char_limit. A working preference, not a platform rule. Delete the key to cut at char_limit.",
+    "limits.hashtag_limit": "How many of the hashtags you pass are kept (the rest are dropped, in order). Treat it as a working cap unless an entry's `confirmed` list names it; none does today.",
+    "limits.hashtag_placement": "Where hashtags go: `first_comment` (Instagram), `tag_facets` (Bluesky), otherwise inline at the end of the post.",
+    "limits.link": "`direct` = a pasted URL is a working link. `bio` = captions do not carry a clickable link, so the CTA routes to the profile link or a comment keyword.",
+    "confirmed": "limits keys whose value matches what `source` says.",
+    "differs": "limits keys where `source` says something else. The SocialForge value is kept and the difference is explained in `notes`.",
+    "unsourced": "limits keys with no source. They are SocialForge's working values."
+  },
+  "platforms": {
+    "linkedin": {
+      "limits": {"char_limit": 3000, "fold_at": 140, "hashtag_limit": 5, "link": "direct"},
+      "source": "https://www.linkedin.com/help/linkedin/answer/a528176",
+      "checked": "2026-10-04",
+      "confirmed": ["char_limit"],
+      "differs": [],
+      "unsourced": ["fold_at", "hashtag_limit", "link"],
+      "notes": "The help page says: \"The character limit for a post is 3,000 characters.\" fold_at 140 and hashtag_limit 5 are SocialForge working values with no source."
+    },
+    "instagram": {
+      "limits": {"char_limit": 2200, "hashtag_limit": 30, "hashtag_placement": "first_comment", "link": "bio"},
+      "source": "SocialForge data, unsourced",
+      "checked": "2026-10-04",
+      "confirmed": [],
+      "differs": [],
+      "unsourced": ["char_limit", "hashtag_limit", "hashtag_placement", "link"],
+      "notes": "No readable primary page was found. A search-engine excerpt of help.instagram.com/351460621611097 says up to 30 tags on a post, but the page itself did not render when fetched, so nothing is recorded as confirmed. The caption limit has no source here at all."
+    },
+    "x": {
+      "limits": {"char_limit": 280, "hashtag_limit": 2, "link": "direct"},
+      "source": "https://docs.x.com/fundamentals/counting-characters",
+      "checked": "2026-10-04",
+      "confirmed": ["char_limit"],
+      "differs": [],
+      "unsourced": ["hashtag_limit", "link"],
+      "notes": "The docs say posts can contain up to 280 characters and that X counts with weights: every URL counts as 23 characters, every emoji as 2, and CJK characters as 2 each. The script counts plain characters, so it overcounts long URLs and long emoji sequences and undercounts single emoji and CJK text. Treat within_limit as necessary but not sufficient for X copy with emoji or CJK. hashtag_limit 2 is a working cap."
+    },
+    "facebook": {
+      "limits": {"char_limit": 63206, "optimal_limit": 500, "hashtag_limit": 3, "link": "direct"},
+      "source": "SocialForge data, unsourced",
+      "checked": "2026-10-04",
+      "confirmed": [],
+      "differs": [],
+      "unsourced": ["char_limit", "optimal_limit", "hashtag_limit", "link"],
+      "notes": "63206 is widely quoted but no Meta page stating it was found. optimal_limit 500 is SocialForge's own truncation target, so the script cuts Facebook copy at 500 even though char_limit is far higher. Delete optimal_limit to cut at char_limit instead."
+    },
+    "youtube": {
+      "limits": {"char_limit": 5000, "hashtag_limit": 5, "link": "direct"},
+      "source": "https://support.google.com/youtube/answer/57407",
+      "checked": "2026-10-04",
+      "confirmed": ["char_limit"],
+      "differs": [],
+      "unsourced": ["hashtag_limit", "link"],
+      "notes": "The help page says: \"Video descriptions have a character limit of 5,000 characters\". hashtag_limit 5 is a working cap. YouTube's hashtag page (https://support.google.com/youtube/answer/6390658) says up to three hashtags show above the video title and that a video with more than 60 hashtags has all of them ignored."
+    },
+    "tiktok": {
+      "limits": {"char_limit": 2200, "hashtag_limit": 10, "link": "bio"},
+      "source": "SocialForge data, unsourced",
+      "checked": "2026-10-04",
+      "confirmed": [],
+      "differs": [],
+      "unsourced": ["char_limit", "hashtag_limit", "link"],
+      "notes": "No TikTok support page could be read. Third-party pages found by search on 2026-10-04 report a 4,000-character caption limit (raised from 2,200); that is unconfirmed here. 2,200 is kept as the conservative working cap, because copy that fits it fits under either number. hashtag_limit 10 is SocialForge's own cap, not a TikTok rule."
+    },
+    "pinterest": {
+      "limits": {"char_limit": 500, "hashtag_limit": 20, "link": "direct"},
+      "source": "https://help.pinterest.com/en/article/review-pin-specs",
+      "checked": "2026-10-04",
+      "confirmed": [],
+      "differs": ["char_limit"],
+      "unsourced": ["hashtag_limit", "link"],
+      "notes": "The Pinterest page covering organic and paid image Pins says the description can be up to 800 characters (title: 100 max). SocialForge's 500 is kept as a conservative working cap. Edit char_limit here if you want the page's number. hashtag_limit 20 is a working cap."
+    },
+    "threads": {
+      "limits": {"char_limit": 500, "hashtag_limit": 3, "link": "direct"},
+      "source": "https://developers.facebook.com/docs/threads/posts/",
+      "checked": "2026-10-04",
+      "confirmed": ["char_limit"],
+      "differs": [],
+      "unsourced": ["hashtag_limit", "link"],
+      "notes": "The Threads API page says: \"Text posts are limited to 500 characters.\" It also says topic tags are 1 to 50 characters but does not say how many a post can carry; third-party pages say one, which is unconfirmed, so hashtag_limit 3 may be generous. Threads calls them topic tags."
+    },
+    "bluesky": {
+      "limits": {"char_limit": 300, "hashtag_limit": 2, "hashtag_placement": "tag_facets", "link": "direct"},
+      "source": "https://raw.githubusercontent.com/bluesky-social/atproto/main/lexicons/app/bsky/feed/post.json",
+      "checked": "2026-10-04",
+      "confirmed": ["char_limit"],
+      "differs": [],
+      "unsourced": ["hashtag_limit", "hashtag_placement", "link"],
+      "notes": "The post record's text field has maxLength 3000 and maxGraphemes 300, so 300 graphemes is the real limit. The script counts code points, which can overcount an emoji sequence or combining marks (the safe direction). The record's tags array allows at most 8 items; hashtag_limit 2 is a working cap."
+    }
+  }
+}
