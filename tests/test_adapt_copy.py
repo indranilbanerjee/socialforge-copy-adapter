@@ -8,7 +8,9 @@ Run from the repository root:
 Six layers:
 
   1. The limits table (platforms.json): shape, provenance, and that every entry
-     is either sourced or says it is unsourced, with no vendor or price content.
+     is either sourced or says it is unsourced, with no vendor or price content;
+     X's weighted count (checked against an independent counter), the numbers a
+     primary page was read for, and hashtags_dropped, each with planted failures.
   2. The script on its own: mechanical cut, CTA mechanisms, hashtag caps and
      placement, bilingual structure, --check, the command line, and that the
      limits really are data (edit the file, the script follows).
@@ -43,8 +45,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.dont_write_bytecode = True  # parity imports SocialForge; never write into it
 
@@ -133,7 +137,7 @@ HASHTAG_LISTS = [
 # 1. The limits table
 # ---------------------------------------------------------------------------
 
-LIMIT_KEYS = {"char_limit", "fold_at", "optimal_limit", "hashtag_limit", "hashtag_placement", "link"}
+LIMIT_KEYS = {"char_limit", "count_method", "fold_at", "optimal_limit", "hashtag_limit", "hashtag_placement", "link"}
 
 
 class TestLimitsData(unittest.TestCase):
@@ -187,8 +191,9 @@ class TestLimitsData(unittest.TestCase):
         for name, entry in self.platforms.items():
             with self.subTest(platform=name):
                 if entry["source"] == UNSOURCED:
-                    self.assertEqual(entry["confirmed"], [])
-                    self.assertEqual(entry["differs"], [])
+                    # Only a key that an also_read entry carries may be confirmed or differ.
+                    carried = {a["key"] for a in entry.get("also_read", []) if "key" in a}
+                    self.assertLessEqual(set(entry["confirmed"]) | set(entry["differs"]), carried)
                 else:
                     self.assertTrue(entry["confirmed"] or entry["differs"],
                                     "a source is cited but nothing is marked confirmed or differs")
@@ -293,8 +298,14 @@ class TestCtaMechanism(unittest.TestCase):
                 self.assertIn("example.com", out["copy"])
 
     def test_a_cta_that_cannot_fit_is_reported_not_hidden(self):
-        out = hero.adapt_for_platform("Body.", "x", cta="Read: https://example.com/" + "p" * 300)
+        # A 300-character CTA with no URL in it. (A 300-character URL would fit on X: X counts it 23.)
+        out = hero.adapt_for_platform("Body.", "x", cta="Read: " + "p" * 300)
         self.assertFalse(out["within_limit"])
+        # The same long URL does not fit where plain characters are counted.
+        out = hero.adapt_for_platform("Body.", "bluesky", cta="Read: https://example.com/" + "p" * 300)
+        self.assertFalse(out["within_limit"])
+        out = hero.adapt_for_platform("Body.", "x", cta="Read: https://example.com/" + "p" * 300)
+        self.assertTrue(out["within_limit"])
 
     def test_render_cta_tidies_the_offer(self):
         self.assertEqual(hero.render_cta("Download the guide — https://a.b/c", hero.PLATFORM_LIMITS["instagram"]),
@@ -353,8 +364,8 @@ class TestPlatformBehaviour(unittest.TestCase):
     def test_result_has_the_documented_keys(self):
         out = hero.adapt_for_platform("Hi.", "x", ["#a"], "Go: https://example.com")
         self.assertEqual(list(out), ["platform", "copy", "char_count", "char_limit", "within_limit",
-                                     "cta_mechanism", "cta_rendered", "fold_at", "hook_visible",
-                                     "hashtags", "hashtag_placement", "first_comment"])
+                                     "count_method", "cta_mechanism", "cta_rendered", "fold_at", "hook_visible",
+                                     "hashtags", "hashtag_placement", "first_comment", "hashtags_dropped"])
 
 
 class TestBilingual(unittest.TestCase):
@@ -379,7 +390,8 @@ class TestCheck(unittest.TestCase):
 
     def test_counts_plain_characters_like_the_adapter_does(self):
         text = "Café ☕ नमस्ते 😀"
-        self.assertEqual(hero.check_copy(text, "x")["char_count"], len(text))
+        self.assertEqual(hero.check_copy(text, "threads")["char_count"], len(text))
+        self.assertEqual(hero.check_copy(text, "threads")["count_method"], "code_points")
 
     def test_hashtag_counting(self):
         text = "Launch #1 with #Growth and #SaaS2026, in C# and page#top and #_ and #2026"
@@ -528,9 +540,15 @@ class TestCommandLine(unittest.TestCase):
         data = json.loads(out)
         self.assertEqual(list(data), NINE)
         for name, entry in data.items():
-            self.assertEqual(set(entry), {"source", "checked", "confirmed", "differs", "unsourced", "notes"})
+            self.assertEqual(set(entry), {"source", "checked", "status", "confirmed", "differs",
+                                          "unsourced", "also_read", "notes"})
+            self.assertEqual(set(entry["status"]), set(hero.PLATFORM_LIMITS[name]))
+            self.assertLessEqual(set(entry["status"].values()), {"confirmed", "differs", "unsourced"})
         self.assertEqual(data["x"]["source"], "https://docs.x.com/fundamentals/counting-characters")
         self.assertEqual(data["tiktok"]["source"], UNSOURCED)
+        self.assertEqual(data["pinterest"]["status"]["char_limit"], "confirmed")
+        self.assertEqual(data["tiktok"]["status"]["char_limit"], "unsourced")
+        self.assertEqual(data["instagram"]["status"]["hashtag_limit"], "confirmed")
 
     def test_skill_folder_is_relocatable(self):
         # platforms.json is found relative to the script, not the working directory,
@@ -565,7 +583,11 @@ class TestCommandLine(unittest.TestCase):
     def test_a_broken_table_is_an_error_not_a_traceback(self):
         for label, broken in (("not json", "{nope"),
                               ("no platforms", json.dumps({"platforms": {}})),
-                              ("bad limit", json.dumps({"platforms": {"x": {"limits": {"char_limit": "280"}}}}))):
+                              ("bad limit", json.dumps({"platforms": {"x": {"limits": {"char_limit": "280"}}}})),
+                              ("unknown method", json.dumps({"platforms": {"x": {"limits": {
+                                  "char_limit": 280, "count_method": "magic"}}}})),
+                              ("weighted without a config", json.dumps({"platforms": {"x": {"limits": {
+                                  "char_limit": 280, "count_method": "x_weighted"}}}}))):
             with self.subTest(case=label):
                 with tempfile.TemporaryDirectory() as tmp:
                     moved = Path(tmp) / "social-copy-adapter"
@@ -576,6 +598,476 @@ class TestCommandLine(unittest.TestCase):
                     self.assertEqual(code, 1)
                     self.assertIn("platforms.json", json.loads(out)["error"])
                     self.assertNotIn("Traceback", err)
+
+
+
+# ---------------------------------------------------------------------------
+# 2b. Sourced limits, X's weighted count, and hashtags that are never dropped silently
+# ---------------------------------------------------------------------------
+
+# twitter-text config/v3.json as read on 2026-10-04, hard-coded so that editing the data
+# away from the primary source fails a test.
+X_CONFIG_V3 = {
+    "version": 3, "maxWeightedTweetLength": 280, "scale": 100, "defaultWeight": 200,
+    "emojiParsingEnabled": True, "transformedURLLength": 23,
+    "ranges": [{"start": 0, "end": 4351, "weight": 100}, {"start": 8192, "end": 8205, "weight": 100},
+               {"start": 8208, "end": 8223, "weight": 100}, {"start": 8242, "end": 8247, "weight": 100}],
+}
+
+
+def valid_date(value):
+    try:
+        return datetime.date.fromisoformat(value) <= datetime.date.today()
+    except (TypeError, ValueError):
+        return False
+
+
+def table_problems(data):
+    """Everything wrong with a limits table, as strings. [] means sound. Each rule is
+    exercised on a planted failure below, so none of them is decoration."""
+    problems = []
+    platforms = data.get("platforms")
+    if not isinstance(platforms, dict):
+        return ["no platforms object"]
+    if list(platforms) != NINE:
+        problems.append(f"platforms are {list(platforms)}, expected {NINE}")
+    for name, entry in platforms.items():
+        where = f"{name}:"
+        limits = entry.get("limits", {})
+        if not set(limits) <= LIMIT_KEYS:
+            problems.append(f"{where} unknown limits keys")
+        if "count_method" in limits and limits["count_method"] not in {"x_weighted"}:
+            problems.append(f"{where} unknown count_method")
+        source = entry.get("source")
+        if not (source == UNSOURCED or (isinstance(source, str) and re.match(r"^https://\S+$", source))):
+            problems.append(f"{where} source must be an https URL or the text {UNSOURCED!r}")
+        if not valid_date(entry.get("checked")):
+            problems.append(f"{where} checked must be a real past ISO date")
+        lists = [entry.get(k, []) for k in ("confirmed", "differs", "unsourced")]
+        if sum(len(x) for x in lists) != len(limits) or set().union(*map(set, lists)) != set(limits):
+            problems.append(f"{where} confirmed/differs/unsourced must partition the limits keys exactly once")
+        also_keys = set()
+        for item in entry.get("also_read", []):
+            if not (isinstance(item.get("url"), str) and re.match(r"^https://\S+$", item["url"])):
+                problems.append(f"{where} also_read entry without an https url")
+            if not valid_date(item.get("checked")):
+                problems.append(f"{where} also_read entry without a real checked date")
+            if not (isinstance(item.get("says"), str) and len(item["says"]) > 20):
+                problems.append(f"{where} also_read entry without a says text")
+            if "key" in item:
+                if item["key"] not in limits:
+                    problems.append(f"{where} also_read key {item['key']!r} is not a limits key")
+                also_keys.add(item["key"])
+        claimed = set(entry.get("confirmed", [])) | set(entry.get("differs", []))
+        if source == UNSOURCED and claimed - also_keys:
+            problems.append(f"{where} {sorted(claimed - also_keys)} marked confirmed/differs but nothing was read "
+                            f"for it (source is unsourced and no also_read entry carries the key)")
+        elif source != UNSOURCED and not claimed:
+            problems.append(f"{where} a source is cited but nothing is marked confirmed or differs")
+        if entry.get("differs") and "kept" not in entry.get("notes", "").lower():
+            problems.append(f"{where} a differing value must be explained in notes (say what was kept)")
+        if limits.get("count_method") == "x_weighted":
+            config = data.get("counting", {}).get("x_weighted", {}).get("config")
+            if not config:
+                problems.append(f"{where} count_method x_weighted but no counting.x_weighted.config")
+            elif config.get("maxWeightedTweetLength") != limits.get("char_limit"):
+                problems.append(f"{where} char_limit differs from counting.x_weighted.config.maxWeightedTweetLength")
+    return problems
+
+
+def pinned_value_problems(data):
+    """The numbers a primary page was read for on 2026-10-04, and the ones that must NOT be
+    upgraded because no readable primary page exists."""
+    problems = []
+    p = data["platforms"]
+    if p["pinterest"]["limits"]["char_limit"] != 800 or "char_limit" not in p["pinterest"]["confirmed"]:
+        problems.append("pinterest char_limit must be 800 and confirmed (help.pinterest.com says up to 800)")
+    if p["threads"]["limits"]["hashtag_limit"] != 1 or "hashtag_limit" not in p["threads"]["confirmed"]:
+        problems.append("threads hashtag_limit must be 1 and confirmed (one topic tag per post)")
+    ig = p["instagram"]
+    if ig["limits"]["hashtag_limit"] != 5 or "hashtag_limit" not in ig["confirmed"]:
+        problems.append("instagram hashtag_limit must be 5 and confirmed (the @creators announcement)")
+    for name in ("tiktok", "facebook", "instagram"):
+        if "char_limit" in p[name]["confirmed"] or "char_limit" not in p[name]["unsourced"]:
+            problems.append(f"{name} char_limit has no readable primary source and must stay unsourced")
+    if p["tiktok"]["limits"]["char_limit"] != 2200:
+        problems.append("tiktok char_limit stays 2200 (the conservative cap) until a primary page says otherwise")
+    return problems
+
+
+class TestSourcedLimits(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.data = json.loads(read(PLATFORMS))
+
+    def test_the_table_is_sound(self):
+        self.assertEqual(table_problems(self.data), [])
+
+    def test_the_primary_page_numbers_are_in_and_the_unreadable_ones_are_not_upgraded(self):
+        self.assertEqual(pinned_value_problems(self.data), [])
+
+    def test_pinterest_allows_what_pinterest_says(self):
+        out = hero.adapt_for_platform("A sentence that fills space. " * 40, "pinterest")
+        self.assertEqual(out["char_limit"], 800)
+        self.assertGreater(out["char_count"], 500)
+        self.assertLessEqual(out["char_count"], 800)
+
+    def assertFires(self, mutate, needle, guard=table_problems):
+        broken = copy.deepcopy(self.data)
+        mutate(broken)
+        problems = guard(broken)
+        self.assertTrue(any(needle in p for p in problems), f"planted failure not caught ({needle!r}): {problems}")
+
+    def test_plants_for_every_rule_in_the_table_guard(self):
+        self.assertFires(lambda d: d["platforms"]["linkedin"].pop("source"), "source must be")
+        self.assertFires(lambda d: d["platforms"]["linkedin"].update(source="trust me"), "source must be")
+        self.assertFires(lambda d: d["platforms"]["x"].pop("checked"), "checked must be")
+        self.assertFires(lambda d: d["platforms"]["x"].update(checked="2999-01-01"), "checked must be")
+        self.assertFires(lambda d: d["platforms"]["youtube"]["unsourced"].remove("link"), "partition")
+        self.assertFires(lambda d: d["platforms"]["youtube"]["confirmed"].append("link"), "partition")
+        self.assertFires(lambda d: d["platforms"]["youtube"]["also_read"][0].pop("says"), "without a says")
+        self.assertFires(lambda d: d["platforms"]["youtube"]["also_read"][0].update(url="nope"), "without an https url")
+        self.assertFires(lambda d: d["platforms"]["instagram"]["also_read"][0].update(key="nope"), "not a limits key")
+        self.assertFires(lambda d: d.pop("counting"), "no counting.x_weighted.config")
+        self.assertFires(lambda d: d["counting"]["x_weighted"]["config"].update(maxWeightedTweetLength=281),
+                         "differs from counting")
+        self.assertFires(lambda d: d["platforms"].pop("bluesky"), "platforms are")
+        self.assertFires(lambda d: d["platforms"]["x"]["limits"].update(magic=1), "unknown limits keys")
+
+        def hollow(d):
+            e = d["platforms"]["linkedin"]
+            e["unsourced"] += e["confirmed"]
+            e["confirmed"] = []
+        self.assertFires(hollow, "nothing is marked confirmed")
+
+        def upgrade(d):
+            t = d["platforms"]["tiktok"]
+            t["unsourced"].remove("char_limit")
+            t["confirmed"].append("char_limit")
+        self.assertFires(upgrade, "nothing was read")
+        self.assertFires(upgrade, "must stay unsourced", guard=pinned_value_problems)
+
+    def test_plants_for_the_pinned_numbers(self):
+        self.assertFires(lambda d: d["platforms"]["pinterest"]["limits"].update(char_limit=500),
+                         "pinterest char_limit must be 800", guard=pinned_value_problems)
+        self.assertFires(lambda d: d["platforms"]["threads"]["limits"].update(hashtag_limit=3),
+                         "threads hashtag_limit must be 1", guard=pinned_value_problems)
+        self.assertFires(lambda d: d["platforms"]["instagram"]["limits"].update(hashtag_limit=30),
+                         "instagram hashtag_limit must be 5", guard=pinned_value_problems)
+
+    def test_the_recorded_x_config_equals_twitter_texts_v3(self):
+        self.assertEqual(self.data["counting"]["x_weighted"]["config"], X_CONFIG_V3)
+        self.assertTrue(self.data["counting"]["x_weighted"]["source"].endswith("/twitter-text/master/config/v3.json"))
+        drifted = copy.deepcopy(self.data["counting"]["x_weighted"]["config"])
+        drifted["transformedURLLength"] = 24
+        self.assertNotEqual(drifted, X_CONFIG_V3)  # the comparison above would catch this edit
+
+
+_REF_PUNCT = ".,;:!?)]}'\"\u201d\u2019\u00bb"
+_REF_NO_URL_BEFORE = "@#$./-"
+
+
+def _ref_char(char, config):
+    code = ord(char)
+    for r in config["ranges"]:
+        if r["start"] <= code <= r["end"]:
+            return r["weight"]
+    return config["defaultWeight"]
+
+
+def _ref_url_spans(text):
+    """URL spans by plain string scanning (not the script's regex): a scheme or www. not glued
+    to a word, running to the end of its whitespace-free run minus trailing sentence
+    punctuation, with at least one character left after the scheme."""
+    spans, i, n = [], 0, len(text)
+    while i < n:
+        if text[i].isspace():
+            i += 1
+            continue
+        j = i
+        while j < n and not text[j].isspace():
+            j += 1
+        token, k = text[i:j], 0
+        while k < len(token):
+            low = token[k:].lower()
+            scheme = 8 if low.startswith("https://") else 7 if low.startswith("http://") else \
+                4 if low.startswith("www.") else 0
+            before = token[k - 1] if k else ""
+            if scheme and not (before and (before.isalnum() or before == "_" or before in _REF_NO_URL_BEFORE)):
+                end = len(token)
+                while end > k + scheme and token[end - 1] in _REF_PUNCT:
+                    end -= 1
+                if end > k + scheme:
+                    spans.append((i + k, i + end))
+                    break
+            k += 1
+        i = j
+    return spans
+
+
+def ref_weight(text, config=X_CONFIG_V3):
+    """An independent reference for X's weighted length, written from the primary config and the
+    docs rather than from the script: NFC first, each URL one 23-weight token, every other code
+    point weighed by range."""
+    text = unicodedata.normalize("NFC", text)
+    total, pos = 0, 0
+    for start, end in _ref_url_spans(text):
+        total += sum(_ref_char(c, config) for c in text[pos:start])
+        total += config["transformedURLLength"] * config["scale"]
+        pos = end
+    total += sum(_ref_char(c, config) for c in text[pos:])
+    return -(-total // config["scale"])
+
+
+def x_counting_problems(mod):
+    """What must hold for X counting in module `mod` (the real one, or a planted break)."""
+    problems = []
+    w = lambda text: mod.adapt_for_platform(text, "x")["char_count"]  # noqa: E731
+    cases = [
+        ("a plain ASCII post counts its characters", "Hello there.", 12),
+        ("a URL counts 23 however long", "https://example.com/" + "p" * 500, 23),
+        ("a short URL counts 23, which len() undercounts", "http://a.b", 23),
+        ("www. URLs count 23", "www.example.com", 23),
+        ("text around a URL still counts", "See https://example.com/a for more", 4 + 23 + 9),
+        ("a URL followed by sentence punctuation: the punctuation counts apart", "See https://example.com/a.", 4 + 23 + 1),
+        ("CJK characters count 2 each", "\u4e16\u754c", 4),
+        ("an emoji counts 2", "\U0001F600", 2),
+        ("a word glued to http:// is not a URL", "xhttps://example.com", 20),
+    ]
+    for label, text, expected in cases:
+        got = w(text)
+        if got != expected:
+            problems.append(f"{label}: {text[:30]!r} counted {got}, expected {expected}")
+    out = mod.adapt_for_platform("x" * 200 + " http://a.b", "x")
+    if out["char_count"] != 224 or len(out["copy"]) != 211:
+        problems.append(f"a short URL must count 23, not its length: char_count {out['char_count']}, "
+                        f"len {len(out['copy'])}, expected 224 and 211")
+    if mod.adapt_for_platform("cafe\u0301", "x")["char_count"] != 4 or \
+            mod.adapt_for_platform("caf\u00e9", "x")["char_count"] != 4:
+        problems.append("composed and decomposed forms must count alike (NFC)")
+    if mod.adapt_for_platform("\u0344", "x")["char_count"] != 2:
+        problems.append("U+0344 expands to two marks under NFC and must count 2")
+    cjk = mod.adapt_for_platform("\u4e16\u754c" * 100, "x")
+    if cjk["char_count"] > 280 or not cjk["within_limit"]:
+        problems.append(f"a 200-character CJK post was not cut to X's weighted 280 (char_count {cjk['char_count']})")
+    if cjk["count_method"] != "x_weighted":
+        problems.append("the result must say how it counted")
+    return problems
+
+
+class TestXWeightedCounting(unittest.TestCase):
+    def test_x_uses_it_and_the_others_do_not(self):
+        for name, spec in hero.PLATFORM_LIMITS.items():
+            with self.subTest(platform=name):
+                self.assertEqual(spec.get("count_method") == "x_weighted", name == "x")
+        self.assertEqual(hero.PLATFORM_LIMITS["x"]["char_limit"], X_CONFIG_V3["maxWeightedTweetLength"])
+
+    def test_the_documented_counting_examples(self):
+        self.assertEqual(x_counting_problems(hero), [])
+
+    def test_range_boundaries(self):
+        wl = lambda ch: hero.weighted_length(ch, hero._X_WEIGHTED)  # noqa: E731
+        for code in (0, 65, 4351, 8192, 8205, 8208, 8223, 8242, 8247):
+            self.assertEqual(wl(chr(code)), 1, code)
+        for code in (4352, 8191, 8206, 8207, 8224, 8241, 8248, 0x4E16, 0x1F600):
+            self.assertEqual(wl(chr(code)), 2, code)
+
+    def test_emoji_sequences_are_over_counted_never_under_counted(self):
+        family = "\U0001F468\u200D\U0001F469\u200D\U0001F467\u200D\U0001F466"
+        for emoji in (family, "\U0001F1FA\U0001F1F8", "\u2764\ufe0f", "1\ufe0f\u20e3"):
+            self.assertGreaterEqual(hero.weighted_length(emoji, hero._X_WEIGHTED), 2)
+        self.assertEqual(hero.weighted_length(family, hero._X_WEIGHTED), 11)  # X counts it 2
+
+    def test_text_is_counted_after_nfc_as_x_does(self):
+        """Raw weighing is not a safe shortcut: a few code points weigh MORE after NFC
+        (U+0344 becomes two marks, Devanagari nukta forms split), so the script normalises."""
+        wl = lambda s: hero.weighted_length(s, hero._X_WEIGHTED)  # noqa: E731
+        self.assertEqual((wl("caf\u00e9"), wl("cafe\u0301"), wl("\u0344"), wl("\u0958")), (4, 4, 2, 2))
+        raw = lambda s: sum(_ref_char(c, X_CONFIG_V3) for c in s) // 100  # noqa: E731
+        self.assertEqual(raw("\u0344"), 1)  # the shortcut that would have undercounted
+        for code in range(0x110000):
+            if 0xD800 <= code <= 0xDFFF:
+                continue
+            ch = chr(code)
+            self.assertEqual(wl(ch), ref_weight(ch), hex(code))
+
+    def test_a_short_url_len_would_undercount(self):
+        body = "x" * 254 + "."
+        out = hero.adapt_for_platform(body, "x", cta="Go: http://a.b")
+        self.assertEqual(len(body + "\n\nGo: http://a.b"), 271)   # len() calls this fine
+        self.assertEqual(ref_weight(body + "\n\nGo: http://a.b"), 284)  # X refuses it
+        self.assertLessEqual(out["char_count"], 280)
+        self.assertTrue(out["within_limit"])
+        self.assertLess(len(out["copy"]), 271)
+        self.assertTrue(out["copy"].endswith("\n\nGo: http://a.b"))
+
+    def test_a_long_url_is_not_over_counted(self):
+        url = "https://example.com/" + "p" * 400
+        out = hero.adapt_for_platform("A short post.", "x", cta="Read: " + url)
+        self.assertEqual(out["copy"], "A short post.\n\nRead: " + url)
+        self.assertEqual(out["char_count"], len("A short post.") + 2 + len("Read: ") + 23)
+        self.assertTrue(out["within_limit"])
+
+    def test_a_cjk_post_is_cut_by_weight(self):
+        out = hero.adapt_for_platform("\u4e16\u754c" * 100, "x")
+        self.assertEqual(out["char_count"], ref_weight(out["copy"]))
+        self.assertLessEqual(out["char_count"], 280)
+        self.assertTrue(out["copy"].endswith("..."))
+
+    def test_the_other_platforms_still_use_plain_len(self):
+        text = "Caf\u00e9 \u2615 \u4e16\u754c \U0001F600 https://example.com/" + "p" * 300
+        for name in NINE:
+            if name != "x":
+                with self.subTest(platform=name):
+                    out = hero.adapt_for_platform(text, name)
+                    self.assertEqual(out["char_count"], len(out["copy"]))
+                    self.assertEqual(out["count_method"], "code_points")
+
+    def test_check_counts_x_by_weight_too(self):
+        text = "\u4e16\u754c" * 100
+        out = hero.check_copy(text, "x")
+        self.assertEqual((out["char_count"], out["within_limit"], out["count_method"]), (400, False, "x_weighted"))
+        self.assertEqual(hero.check_copy("http://a.b", "x")["char_count"], 23)
+        self.assertEqual(hero.check_copy("http://a.b", "threads")["char_count"], 10)
+
+    def test_fuzz_x_results_agree_with_an_independent_count_and_fit(self):
+        rng = random.Random(20261004)
+        pieces = ["growth", "the", "checklist", "dashboard", "Caf\u00e9", "\u0928\u092e\u0938\u094d\u0924\u0947",
+                  "\u4e16\u754c", "\u3053\u3093\u306b\u3061\u306f", "\U0001F600", "\u2615", "\u2764\ufe0f",
+                  "\U0001F468\u200D\U0001F469\u200D\U0001F467\u200D\U0001F466", "\U0001F1FA\U0001F1F8", "14", "steps"]
+        urls = ["https://example.com/", "http://a.b", "www.x.org/p", "https://example.com/" + "q" * 120]
+        terminators = [". ", "! ", "? ", ", ", " ", "\n\n", ".) ", ".\n"]
+        ctas = [None, "", "Get it: https://example.com/checklist", "http://a.b", "Join us",
+                "Read: www.example.org/long/path"]
+        checked = cut = 0
+        for _ in range(1500):
+            parts, size, target = [], 0, rng.randint(1, 700)
+            while size < target:
+                piece = " ".join(rng.choice(pieces) for _ in range(rng.randint(1, 8)))
+                if rng.random() < 0.25:
+                    piece += " " + rng.choice(urls) + rng.choice(["", ".", ")", ","])
+                piece += rng.choice(terminators)
+                parts.append(piece)
+                size += len(piece)
+            text = "".join(parts).rstrip()
+            if not text:
+                continue
+            cta = rng.choice(ctas)
+            out = hero.adapt_for_platform(text, "x", None, cta)
+            checked += 1
+            self.assertEqual(out["char_count"], ref_weight(out["copy"]), (text[:60], cta))
+            self.assertEqual(out["within_limit"], out["char_count"] <= 280)
+            cta_block = f"\n\n{cta}" if cta else ""
+            self.assertTrue(out["copy"].endswith(cta_block))
+            if ref_weight(cta_block) <= 276:
+                self.assertTrue(out["within_limit"], (text[:60], cta, out["char_count"]))
+            if ref_weight(text + cta_block) <= 280:
+                self.assertEqual(out["copy"], text + cta_block)
+            else:
+                cut += 1
+        self.assertGreater(checked, 1300)
+        self.assertGreater(cut, 250)
+
+    def test_the_reference_counter_agrees_with_the_documented_examples(self):
+        self.assertEqual(ref_weight("https://..."), 11)  # a scheme with nothing after it is not a URL
+        self.assertEqual(ref_weight("(https://example.com)"), 25)
+        self.assertEqual(ref_weight("See https://example.com/a."), 28)
+        self.assertEqual(ref_weight("xhttps://example.com"), 20)
+
+    # -- plants: each guard must fire -------------------------------------------------
+    def test_plant_x_measured_with_len_again(self):
+        with mock.patch.object(hero, "_measurer", lambda specs: len):
+            problems = x_counting_problems(hero)
+        self.assertGreaterEqual(len(problems), 4, problems)
+
+    def test_plant_url_weight_changed(self):
+        with mock.patch.object(hero, "_X_WEIGHTED", dict(hero._X_WEIGHTED, url_length=22)):
+            self.assertTrue(x_counting_problems(hero))
+
+    def test_plant_every_emoji_and_cjk_weighed_one(self):
+        with mock.patch.object(hero, "_X_WEIGHTED", dict(hero._X_WEIGHTED, default_weight=100)):
+            problems = x_counting_problems(hero)
+        self.assertTrue(any("CJK" in p or "emoji" in p for p in problems), problems)
+
+    def test_plant_urls_not_detected(self):
+        with mock.patch.object(hero, "_X_URL_RE", re.compile(r"(?!x)x")):
+            problems = x_counting_problems(hero)
+        self.assertTrue(any("URL" in p for p in problems), problems)
+
+    def test_plant_no_nfc(self):
+        with mock.patch.object(hero.unicodedata, "normalize", lambda form, text: text):
+            problems = x_counting_problems(hero)
+        self.assertTrue(any("NFC" in p or "U+0344" in p for p in problems), problems)
+
+    def test_plant_the_cut_ignoring_weight(self):
+        real = hero.truncate_smart
+        with mock.patch.object(hero, "truncate_smart", lambda text, limit, measure=len: real(text, limit)):
+            problems = x_counting_problems(hero)
+        self.assertTrue(any("CJK post was not cut" in p for p in problems), problems)
+
+    def test_plant_check_copy_measuring_with_len(self):
+        with mock.patch.object(hero, "_measurer", lambda specs: len):
+            self.assertNotEqual(hero.check_copy("http://a.b", "x")["char_count"], 23)
+
+
+def hashtag_problems(mod):
+    problems = []
+    tags = [f"#t{i}" for i in range(12)]
+    for name, spec in mod.PLATFORM_LIMITS.items():
+        cap = spec.get("hashtag_limit", 5)
+        out = mod.adapt_for_platform("Hi.", name, tags)
+        if "hashtags_dropped" not in out:
+            problems.append(f"{name}: result has no hashtags_dropped")
+            continue
+        kept = (out["first_comment"] if out["first_comment"] is not None else out["hashtags"]).split()
+        if kept + out["hashtags_dropped"] != tags:
+            problems.append(f"{name}: kept + dropped is not the full list in order")
+        if out["hashtags_dropped"] != tags[cap:]:
+            problems.append(f"{name}: dropped {out['hashtags_dropped']}, expected {tags[cap:]}")
+        for given in (None, []):
+            if mod.adapt_for_platform("Hi.", name, given)["hashtags_dropped"] != []:
+                problems.append(f"{name}: no hashtags given must give an empty list")
+    return problems
+
+
+class TestNoSilentHashtagDrops(unittest.TestCase):
+    def test_every_platform_reports_what_its_cap_removed(self):
+        self.assertEqual(hashtag_problems(hero), [])
+
+    def test_instagram_first_comment_and_threads_topic_tag(self):
+        tags = [f"#i{i}" for i in range(8)]
+        out = hero.adapt_for_platform("Post.", "instagram", tags)
+        self.assertEqual(out["first_comment"], "#i0 #i1 #i2 #i3 #i4")
+        self.assertEqual(out["hashtags_dropped"], ["#i5", "#i6", "#i7"])
+        out = hero.adapt_for_platform("Post.", "threads", ["#a", "#b"])
+        self.assertEqual((out["hashtags"], out["hashtags_dropped"]), ("#a", ["#b"]))
+
+    def test_the_cli_prints_it(self):
+        code, out, _ = run_cli(["--text", "Post.", "--platform", "x", "--hashtags", "#a", "#b", "#c"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["hashtags_dropped"], ["#c"])
+
+    def test_the_skill_tells_the_agent_to_tell_the_writer(self):
+        text = " ".join(read(SKILL_MD).split())
+        self.assertIn("hashtags_dropped", text)
+        self.assertRegex(text, r"(?i)tell the writer which")
+
+    def test_plant_silent_dropping_is_caught(self):
+        real = hero.adapt_for_platform
+
+        def silent(*args, **kwargs):
+            out = real(*args, **kwargs)
+            out.pop("hashtags_dropped", None)
+            return out
+        wrapped = mock.Mock(PLATFORM_LIMITS=hero.PLATFORM_LIMITS, adapt_for_platform=silent)
+        self.assertTrue(any("no hashtags_dropped" in p for p in hashtag_problems(wrapped)))
+
+        def off_by_one(*args, **kwargs):
+            out = real(*args, **kwargs)
+            out["hashtags_dropped"] = out["hashtags_dropped"][1:]
+            return out
+        wrapped = mock.Mock(PLATFORM_LIMITS=hero.PLATFORM_LIMITS, adapt_for_platform=off_by_one)
+        self.assertTrue(any("expected" in p or "full list" in p for p in hashtag_problems(wrapped)))
 
 
 # ---------------------------------------------------------------------------
@@ -704,7 +1196,7 @@ class TestSkillHygiene(unittest.TestCase):
                 imported |= {a.name.split(".")[0] for a in node.names}
             elif isinstance(node, ast.ImportFrom):
                 imported.add((node.module or "").split(".")[0])
-        self.assertLessEqual(imported, {"__future__", "argparse", "json", "re", "sys", "pathlib"})
+        self.assertLessEqual(imported, {"__future__", "argparse", "json", "re", "sys", "pathlib", "unicodedata"})
         for needle in ("os.environ", "getenv", "Path.home", "CLAUDE_PLUGIN", "workspace", "brand-config",
                        "registry", "api_key", "urlopen", "socket"):
             self.assertNotIn(needle, src, f"script mentions {needle}")
@@ -918,6 +1410,29 @@ class TestParityWithSocialForge(unittest.TestCase):
         for name in hero.PLATFORM_LIMITS:
             self.assertEqual(list(hero.PLATFORM_LIMITS[name]), list(self.sf.PLATFORM_LIMITS[name]), name)
 
+    def test_the_limits_data_is_identical(self):
+        sf_data = json.loads(read(SF_ROOT / "scripts" / "platform_limits.json"))
+        mine = json.loads(read(PLATFORMS))
+        self.assertEqual(mine["platforms"], sf_data["platforms"])
+        self.assertEqual(mine["counting"], sf_data["counting"])
+        self.assertEqual(list(mine["platforms"]), list(sf_data["platforms"]))
+
+    def test_provenance_output_is_identical(self):
+        self.assertEqual(hero._provenance(hero._RAW_DATA), self.sf._provenance(self.sf._RAW_DATA))
+
+    def test_x_counting_agrees_on_a_grid_and_on_random_text(self):
+        rng = random.Random(11)
+        alphabet = ["a", "b ", "世", "界", "😀", "é", "e\u0301", "\u0344", "https://example.com/x", "http://a.b",
+                    "www.a.org", ". ", "!", "(", ")", "\n", "👨\u200d👩\u200d👧", "🇺🇸", "नमस्ते"]
+        for _ in range(3000):
+            text = "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 60)))
+            self.assertEqual(hero.weighted_length(text, hero._X_WEIGHTED),
+                             self.sf.weighted_length(text, self.sf._X_WEIGHTED), text)
+        for limit in range(1, 120):
+            for text in list(TEXTS.values())[:8]:
+                self.assertEqual(hero.truncate_smart(text, limit, hero._measurer(hero.PLATFORM_LIMITS["x"])),
+                                 self.sf.truncate_smart(text, limit, self.sf._measurer(self.sf.PLATFORM_LIMITS["x"])))
+
     def test_adapt_for_platform_on_the_full_grid(self):
         mismatches, total = [], 0
         for tname, text in TEXTS.items():
@@ -980,10 +1495,13 @@ class TestParityWithSocialForge(unittest.TestCase):
                 self.assertEqual(mine, theirs)
 
     def test_adaptation_code_is_the_same_code(self):
-        for name in ("truncate_smart", "render_cta", "adapt_for_platform"):
+        for name in ("truncate_smart", "render_cta", "adapt_for_platform", "weighted_length", "_plain_weight",
+                     "_measurer", "_fit", "_x_weighted_config", "_load_platforms", "_provenance"):
             with self.subTest(function=name):
                 self.assertEqual(_code_dump(_function(SCRIPT, name)), _code_dump(_function(SF_SCRIPT, name)))
-        self.assertEqual(ast.dump(_assignment(SCRIPT, "_URL_RE")), ast.dump(_assignment(SF_SCRIPT, "_URL_RE")))
+        for name in ("_URL_RE", "_X_URL_RE", "_COUNT_METHODS"):
+            with self.subTest(assignment=name):
+                self.assertEqual(ast.dump(_assignment(SCRIPT, name)), ast.dump(_assignment(SF_SCRIPT, name)))
         # generate_bilingual: the same code once the one reworded sentence is masked.
         prefix = "Secondary copy requires translation."
         self.assertEqual(_code_dump(_function(SCRIPT, "generate_bilingual"), prefix),

@@ -10,10 +10,11 @@ It is the copy adapter from SocialForge, pulled out as a single Agent Skill that
 
 - Adapts one post into native variants for **LinkedIn, Instagram, X, Facebook, YouTube, TikTok, Pinterest, Threads and Bluesky**: tone, structure, hook, and the character limit for each.
 - Treats the **CTA as a mechanism, not a string**. A direct link where links work; on Instagram and TikTok the URL is dropped and the reader is routed by a comment keyword or "link in bio". The CTA is never silently discarded, and room for it is reserved before the copy is cut.
-- Keeps **hashtags in their place**: capped per platform, and on Instagram returned separately for the first comment.
+- Keeps **hashtags in their place**: capped per platform, on Instagram returned separately for the first comment, and any the cap leaves out reported in `hashtags_dropped` instead of vanishing.
 - Structures a **bilingual** second variant and a **cross-post set**, with the translation and the final check left explicit rather than faked.
 - Keeps the **caption craft rules** that make short copy good: no "here's the thing" significance markers, at most one soft adverb, and the pairing rule (on-image text and the caption do different jobs and never echo each other).
 - Handles **AI-disclosure** the platform-native way: use the platform's own label where it has one, add a visible line only when the writer's rule calls for it, never imply human authorship of AI-made material.
+- Counts length **the way the platform does** where that is known: X by weight (emoji and CJK count 2, every URL counts 23, per twitter-text's own configuration), everyone else by characters.
 - Ships `adapt_copy.py`, a **standard-library-only** script. No network, no model calls, no credentials, no dependencies. Its limits live in `platforms.json`, which records where each number came from.
 
 ## Install
@@ -64,16 +65,20 @@ It prints (a real run, unedited):
     "x": {
       "platform": "x",
       "copy": "We cut our onboarding checklist from 14 steps to 6. New teams now reach their first dashboard in one sitting, and the median time to get there fell from 3 days to 4 hours.\n\nGet the checklist: https://example.com/checklist",
-      "char_count": 221,
+      "char_count": 215,
       "char_limit": 280,
       "within_limit": true,
+      "count_method": "x_weighted",
       "cta_mechanism": "direct-link",
       "cta_rendered": "Get the checklist: https://example.com/checklist",
       "fold_at": null,
       "hook_visible": "We cut our onboarding checklist from 14 steps to 6. New teams now reach their first dashboard in one",
       "hashtags": "#Onboarding #SaaS",
       "hashtag_placement": "inline",
-      "first_comment": null
+      "first_comment": null,
+      "hashtags_dropped": [
+        "#CustomerSuccess"
+      ]
     },
     "instagram": {
       "platform": "instagram",
@@ -81,13 +86,15 @@ It prints (a real run, unedited):
       "char_count": 385,
       "char_limit": 2200,
       "within_limit": true,
+      "count_method": "code_points",
       "cta_mechanism": "comment-keyword",
       "cta_rendered": "Comment \"CHECKLIST\" and we'll send you the link.",
       "fold_at": null,
       "hook_visible": "We cut our onboarding checklist from 14 steps to 6. New teams now reach their first dashboard in one",
       "hashtags": "",
       "hashtag_placement": "first_comment",
-      "first_comment": "#Onboarding #SaaS #CustomerSuccess"
+      "first_comment": "#Onboarding #SaaS #CustomerSuccess",
+      "hashtags_dropped": []
     },
     "linkedin": {
       "platform": "linkedin",
@@ -95,13 +102,15 @@ It prints (a real run, unedited):
       "char_count": 385,
       "char_limit": 3000,
       "within_limit": true,
+      "count_method": "code_points",
       "cta_mechanism": "direct-link",
       "cta_rendered": "Get the checklist: https://example.com/checklist",
       "fold_at": 140,
       "hook_visible": "We cut our onboarding checklist from 14 steps to 6. New teams now reach their first dashboard in one sitting, and the median time to get the",
       "hashtags": "#Onboarding #SaaS #CustomerSuccess",
       "hashtag_placement": "inline",
-      "first_comment": null
+      "first_comment": null,
+      "hashtags_dropped": []
     }
   }
 }
@@ -109,7 +118,7 @@ It prints (a real run, unedited):
 
 What happened, field by field:
 
-- **X.** The post did not fit once the CTA's room was reserved, so the script cut at the last sentence that fit and kept the CTA as a direct link. It also kept two of the three hashtags, X's cap in the limits table, and dropped `#CustomerSuccess` without comment. That cut is mechanical. In real use you rewrite the X version yourself, run it again, and ship the script's cut only if you accept it.
+- **X.** The post did not fit once the CTA's room was reserved, so the script cut at the last sentence that fit and kept the CTA as a direct link. `char_count` is X's weighted count (`count_method` is `x_weighted`): the CTA's URL counts 23 whatever its length. It also kept two of the three hashtags, X's cap in the limits table, and listed `#CustomerSuccess` in `hashtags_dropped`, so the drop is on the record. That cut is mechanical. In real use you rewrite the X version yourself, run it again, and ship the script's cut only if you accept it.
 - **Instagram.** The URL is gone from the caption, replaced by the comment-keyword ask, and all three hashtags are in `first_comment`.
 - **LinkedIn.** Untouched. `hook_visible` is the text before the assumed "see more" fold.
 
@@ -119,30 +128,30 @@ What happened, field by field:
 
 | The script does | You (or your agent) do |
 |---|---|
-| Counts characters against the limit | Rewrites for tone, structure and hook |
+| Counts length the way the platform does against the limit | Rewrites for tone, structure and hook |
 | Reserves room for the CTA, then cuts mechanically | Decides what to tighten; a rewrite beats a cut |
 | Renders the CTA mechanism per platform | Chooses the offer and the wording |
-| Caps hashtags and says where they go | Chooses which hashtags matter |
+| Caps hashtags, says where they go, lists what the cap removed | Chooses which hashtags matter, tells you which were dropped |
 | Structures the bilingual variant | Writes and reviews the translation |
 | Measures finished text with `--check` | Claims, compliance, disclosure |
 
 ## The limits are data, and not all of them are confirmed
 
-`skills/social-copy-adapter/platforms.json` carries each platform's numbers with a `source`, a `checked` date and a record of what the source confirms. SocialForge's data had no sources, so on 2026-10-04 each limit was compared against the platform's own documentation where a readable page could be found. The character limit, by platform:
+`skills/social-copy-adapter/platforms.json` carries each platform's numbers with a `source`, a `checked` date and a record of what the source confirms. SocialForge's data had no sources, so on 2026-10-04 each limit was compared against the platform's own documentation where a readable page could be found, and the numbers a readable page contradicted were changed to the page's (Pinterest's description limit, Instagram's and Threads' hashtag caps). The character limit, by platform:
 
 | Platform | Limit | Status |
 |---|---|---|
 | LinkedIn | 3,000 | confirmed (LinkedIn help page) |
 | Instagram | 2,200 | unsourced (no readable primary page) |
-| X | 280 | confirmed (X docs); X counts URLs as 23 and emoji and CJK as 2 each |
+| X | 280 | confirmed (X docs and twitter-text's configuration); counted by weight: URLs 23, emoji and CJK 2 each |
 | Facebook | 63,206 | unsourced (script cuts at 500 anyway) |
 | YouTube | 5,000 | confirmed (YouTube help page) |
 | TikTok | 2,200 | unsourced; third-party pages report 4,000, unconfirmed here |
-| Pinterest | 500 | differs: Pinterest's page says 800; the 500 is kept as a conservative cap |
-| Threads | 500 | confirmed (Threads API docs) |
+| Pinterest | 800 | confirmed (Pinterest help page; this was 500 in SocialForge's data) |
+| Threads | 500 | confirmed (Threads API docs); emoji count as UTF-8 bytes there, which the script does not model |
 | Bluesky | 300 | confirmed (300 graphemes, from the post lexicon) |
 
-Hashtag caps and the "see more" position are working values with no source anywhere. Run `python skills/social-copy-adapter/scripts/adapt_copy.py --sources` for the full record, and edit a number in `limits` if you know better. Platforms change their limits without notice; check the platform's current documentation before relying on any number for something that matters.
+Hashtag caps: Instagram's 5 is confirmed by Instagram's own announcement (its @creators account, 2025-12-18) and Threads' 1 by the Threads API docs (one topic tag per post); every other cap, and the "see more" position, is a working value with no source. Run `python skills/social-copy-adapter/scripts/adapt_copy.py --sources` for the full record, and edit a number in `limits` if you know better. Platforms change their limits without notice; check the platform's current documentation before relying on any number for something that matters.
 
 ## What this is not
 
@@ -158,7 +167,7 @@ Hashtag caps and the "see more" position are working values with no source anywh
 python -m pytest tests -q
 ```
 
-The tests cover the script (limits, mechanical cut, CTA mechanisms, hashtag caps and placement, bilingual structure, `--check`, the command line), the limits table (every entry sourced or marked unsourced, dated, and consistent with its own confirmed/differs/unsourced lists), the skill (frontmatter, links, no references to anything this repository does not have, the platform table matching the data), and that the example above is a real run. When this repository sits next to a SocialForge checkout (`../../SocialForge`, or set `SOCIALFORGE_DIR`), they also prove **parity**: the hero and SocialForge's `adapt_copy.py` return identical results across a grid of platforms, texts, CTAs and hashtag lists plus thousands of seeded random cases, the adaptation functions are the same code, and the command lines agree. Without a SocialForge checkout those tests skip, and a test runs the whole suite from a copy of this repository with no sibling to prove a standalone clone passes.
+The tests cover the script (limits, mechanical cut, CTA mechanisms, hashtag caps and placement, `hashtags_dropped`, X's weighted count checked against an independent counter, bilingual structure, `--check`, the command line), the limits table (every entry sourced or marked unsourced, dated, and consistent with its own confirmed/differs/unsourced lists; the pages that were read pinned, the unreadable ones kept unsourced), the skill (frontmatter, links, no references to anything this repository does not have, the platform table matching the data), and that the example above is a real run. When this repository sits next to a SocialForge checkout (`../../SocialForge`, or set `SOCIALFORGE_DIR`), they also prove **parity**: the hero and SocialForge's `adapt_copy.py` return identical results across a grid of platforms, texts, CTAs and hashtag lists plus thousands of seeded random cases, the adaptation, counting and loading functions are the same code, the limits data is identical, and the command lines agree. Without a SocialForge checkout those tests skip, and a test runs the whole suite from a copy of this repository with no sibling to prove a standalone clone passes.
 
 ## Part of SocialForge
 

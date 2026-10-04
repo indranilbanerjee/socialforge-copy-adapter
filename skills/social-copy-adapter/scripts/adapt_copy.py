@@ -8,23 +8,28 @@ read except the limits table next to SKILL.md and the text you point it at.
 
 This is SocialForge's copy-adapter script, extracted so the skill can run on
 its own. The adaptation functions (truncate_smart, render_cta,
-adapt_for_platform, generate_bilingual) are deliberately the same code, apart
-from one sentence: generate_bilingual's `note` no longer points at tools this
-skill does not have. tests/test_adapt_copy.py proves the rest against
-SocialForge whenever the two repositories sit side by side. What differs: the
-limits come from ../platforms.json instead of a literal, brand profiles are
-gone (pass hashtags and the comment keyword on the command line), unknown
-platforms exit 1, and four conveniences were added around the unchanged core:
-several platforms in one run, --text-file, --check and --sources.
+adapt_for_platform, generate_bilingual) and the limits loader and counting
+code are deliberately the same code, apart from one sentence:
+generate_bilingual's `note` no longer points at tools this skill does not
+have. tests/test_adapt_copy.py proves the rest against SocialForge whenever
+the two repositories sit side by side. What differs: the limits come from
+../platforms.json (SocialForge: scripts/platform_limits.json), brand profiles
+are gone (pass hashtags and the comment keyword on the command line),
+unknown platforms exit 1, and four conveniences were added around the
+unchanged core: several platforms in one run, --text-file, --check and
+--sources.
 
 What it does, per platform:
     * reserves room for the CTA, then cuts the copy to the limit at the last
       sentence boundary that fits (a mechanical cut, not a rewrite);
+    * counts length the way the platform does where that is known: X by
+      weight (emoji and CJK count 2, every URL counts 23), everyone else by
+      plain characters (Python len);
     * turns the CTA into the platform's mechanism: kept as written where links
       work, or "Comment KEYWORD" / "link in bio" where they do not;
-    * keeps at most `hashtag_limit` hashtags and says where they go
-      (Instagram: first comment);
-    * reports `char_count`, `char_limit` and `within_limit`.
+    * keeps at most `hashtag_limit` hashtags, says where they go (Instagram:
+      first comment) and lists the ones it left out in `hashtags_dropped`;
+    * reports `char_count`, `char_limit`, `within_limit` and `count_method`.
 What it does not do: write, translate, rewrite for tone, check compliance, or
 post anything. See SKILL.md, "What the script does not do".
 
@@ -48,14 +53,35 @@ import argparse
 import json
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
 # The limits table ships one level up from scripts/, inside the skill folder.
 PLATFORMS_PATH = Path(__file__).resolve().parent.parent / "platforms.json"
 
+_COUNT_METHODS = ("x_weighted",)
+
+
+def _x_weighted_config(raw):
+    """The X counting rules recorded in the data file (`counting.x_weighted.config`,
+    field names as in twitter-text's config/v3.json), checked and unpacked."""
+    cfg = raw["counting"]["x_weighted"]["config"]
+    ranges = []
+    for item in cfg["ranges"]:
+        start, end, weight = item["start"], item["end"], item["weight"]
+        if (not all(isinstance(v, int) and not isinstance(v, bool) for v in (start, end, weight))
+                or start > end or weight < 0):
+            raise ValueError("counting.x_weighted.config.ranges needs integer start <= end and weight >= 0")
+        ranges.append((start, end, weight))
+    scale, default, url_len = cfg["scale"], cfg["defaultWeight"], cfg["transformedURLLength"]
+    if not all(isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in (scale, default, url_len)):
+        raise ValueError("counting.x_weighted.config needs positive integer scale, "
+                         "defaultWeight and transformedURLLength")
+    return {"scale": scale, "default_weight": default, "url_length": url_len, "ranges": ranges}
+
 
 def _load_platforms(path):
-    """Read platforms.json. Returns (limits_by_platform, raw_data, error)."""
+    """Read the limits table. Returns (limits_by_platform, raw_data, error)."""
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
         platforms = raw["platforms"]
@@ -64,6 +90,11 @@ def _load_platforms(path):
             spec = entry["limits"]
             if not isinstance(spec.get("char_limit"), int) or spec["char_limit"] < 1:
                 raise ValueError(f"{name}: limits.char_limit must be a positive integer")
+            method = spec.get("count_method")
+            if method is not None and method not in _COUNT_METHODS:
+                raise ValueError(f"{name}: limits.count_method must be one of {', '.join(_COUNT_METHODS)}")
+            if method == "x_weighted":
+                _x_weighted_config(raw)
             limits[name] = spec
         if not limits:
             raise ValueError("no platforms listed")
@@ -73,20 +104,116 @@ def _load_platforms(path):
 
 
 PLATFORM_LIMITS, _RAW_DATA, _DATA_ERROR = _load_platforms(PLATFORMS_PATH)
+_X_WEIGHTED = _x_weighted_config(_RAW_DATA) if any(
+    spec.get("count_method") == "x_weighted" for spec in PLATFORM_LIMITS.values()) else None
 
 
-def truncate_smart(text, limit):
-    """Truncate at last complete sentence that fits."""
-    if len(text) <= limit:
+def _provenance(raw):
+    """What --sources prints: per platform, where each number came from."""
+    out = {}
+    for name, entry in raw["platforms"].items():
+        confirmed = entry.get("confirmed", [])
+        differs = entry.get("differs", [])
+        out[name] = {
+            "source": entry.get("source"),
+            "checked": entry.get("checked"),
+            "status": {key: ("confirmed" if key in confirmed else "differs" if key in differs else "unsourced")
+                       for key in entry["limits"]},
+            "confirmed": confirmed,
+            "differs": differs,
+            "unsourced": entry.get("unsourced", []),
+            "also_read": entry.get("also_read", []),
+            "notes": entry.get("notes"),
+        }
+    return out
+
+
+# A URL as X counts it for weighting: starts with http://, https:// or www.,
+# is not glued to a word, and does not end in sentence punctuation (that
+# stays ordinary text, which can only make the count higher than X's).
+_X_URL_RE = re.compile(
+    r"(?<![\w@#$.\-/])(?:https?://|www\.)\S*[^\s.,;:!?)\]}'\"”’»]", re.IGNORECASE)
+
+
+def _plain_weight(text, default, ranges):
+    total = 0
+    for char in text:
+        code = ord(char)
+        for start, end, weight in ranges:
+            if start <= code <= end:
+                total += weight
+                break
+        else:
+            total += default
+    return total
+
+
+def weighted_length(text, config):
+    """X's weighted length of `text` under `config` (see _x_weighted_config),
+    rounded up to whole characters.
+
+    The text is normalised to NFC first, as X does. A code point inside a
+    configured range then weighs that range's weight, every other code point
+    the default (so emoji and CJK weigh 2), and every URL weighs the
+    transformed URL length (23) however long it is. One thing the reference
+    counter does is left out on purpose: it parses an emoji sequence as one
+    emoji (2), while here each code point of the sequence is weighed, which can
+    only make the count higher.
+    """
+    text = unicodedata.normalize("NFC", text)
+    scale, default, ranges = config["scale"], config["default_weight"], config["ranges"]
+    total = 0
+    position = 0
+    for match in _X_URL_RE.finditer(text):
+        total += _plain_weight(text[position:match.start()], default, ranges)
+        total += config["url_length"] * scale
+        position = match.end()
+    total += _plain_weight(text[position:], default, ranges)
+    return -(-total // scale)
+
+
+def _measurer(specs):
+    """The length function for a platform: len() unless its limits say otherwise."""
+    if specs.get("count_method") == "x_weighted":
+        return lambda text: weighted_length(text, _X_WEIGHTED)
+    return len
+
+
+def _fit(text, budget, measure):
+    """The longest prefix length whose measure is within budget (0 if none)."""
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if measure(text[:mid]) <= budget:
+            low = mid
+        else:
+            high = mid - 1
+    return low
+
+
+def truncate_smart(text, limit, measure=len):
+    """Truncate at last complete sentence that fits.
+
+    `measure` is how the platform counts length: len for most platforms, X's
+    weighted count for X. With the default, the slicing is exactly what it
+    always was.
+    """
+    if measure(text) <= limit:
         return text
-    truncated = text[:limit]
+    if measure is len:
+        keep, keep_ellipsis = limit, limit - 3
+    else:
+        keep, keep_ellipsis = _fit(text, limit, measure), _fit(text, limit - 3, measure)
+    truncated = text[:keep]
     last_period = truncated.rfind(".")
     last_excl = truncated.rfind("!")
     last_quest = truncated.rfind("?")
     best_break = max(last_period, last_excl, last_quest)
-    if best_break > limit * 0.5:
-        return truncated[:best_break + 1]
-    return truncated[:limit - 3] + "..."
+    if best_break > keep * 0.5:
+        candidate = truncated[:best_break + 1]
+        if measure(candidate) <= limit:
+            return candidate
+    return truncated[:keep_ellipsis] + "..."
 
 
 _URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
@@ -125,6 +252,10 @@ def adapt_for_platform(copy_text, platform, brand_hashtags=None, cta=None, cta_k
     if not specs:
         return {"error": f"Unknown platform: {platform}"}
 
+    # Length is counted the way the platform counts it: X by weight (URLs
+    # count 23, emoji and CJK 2), every other platform by plain len().
+    count = _measurer(specs)
+
     # Render the CTA first: the room it needs must be reserved BEFORE
     # truncation. It used to be appended after, so a limit-length post plus its
     # CTA overflowed the platform limit and the script shipped copy it had
@@ -137,23 +268,24 @@ def adapt_for_platform(copy_text, platform, brand_hashtags=None, cta=None, cta_k
     # Truncate to fold point (for preview visibility) or optimal limit
     fold_at = specs.get("fold_at")
     limit = specs.get("optimal_limit", specs["char_limit"])
-    body_limit = max(1, limit - len(cta_block))
+    body_limit = max(1, limit - count(cta_block))
 
     if fold_at and len(copy_text) > fold_at:
         # For platforms with "see more" fold: ensure hook is in first N chars
         # Full copy still saved, but first fold_at chars must be compelling
         adapted = copy_text  # Keep full copy
-        if len(adapted) > body_limit:
-            adapted = truncate_smart(adapted, body_limit)
+        if count(adapted) > body_limit:
+            adapted = truncate_smart(adapted, body_limit, count)
     else:
-        adapted = truncate_smart(adapted, body_limit)
+        adapted = truncate_smart(adapted, body_limit, count)
 
     adapted += cta_block
 
-    # Prepare hashtags
+    # Prepare hashtags. Whatever the cap leaves out is reported, never lost silently.
     all_hashtags = list(brand_hashtags or [])
     hashtag_limit = specs.get("hashtag_limit", 5)
     hashtag_text = " ".join(all_hashtags[:hashtag_limit])
+    hashtags_dropped = all_hashtags[hashtag_limit:]
 
     # Instagram first-comment strategy: hashtags go in first comment, not caption
     first_comment = None
@@ -165,9 +297,10 @@ def adapt_for_platform(copy_text, platform, brand_hashtags=None, cta=None, cta_k
     result = {
         "platform": platform,
         "copy": adapted,
-        "char_count": len(adapted),
+        "char_count": count(adapted),
         "char_limit": specs["char_limit"],
-        "within_limit": len(adapted) <= specs["char_limit"],
+        "within_limit": count(adapted) <= specs["char_limit"],
+        "count_method": specs.get("count_method", "code_points"),
         "cta_mechanism": ("comment-keyword" if (cta and cta_keyword and specs.get("link") == "bio")
                           else "bio-link" if (cta and specs.get("link") == "bio")
                           else "direct-link" if cta else None),
@@ -177,6 +310,7 @@ def adapt_for_platform(copy_text, platform, brand_hashtags=None, cta=None, cta_k
         "hashtags": hashtag_text,
         "hashtag_placement": specs.get("hashtag_placement", "inline"),
         "first_comment": first_comment,
+        "hashtags_dropped": hashtags_dropped,
     }
 
     return result
@@ -208,13 +342,13 @@ def check_copy(text, platform):
     """Measure FINISHED text against a platform's limits. Adds nothing, cuts nothing.
 
     Use it on the exact string you will post: the assembled caption with its
-    CTA and any inline hashtags, or a translated variant. Counting is plain
-    len(), the same measure adapt_for_platform uses.
+    CTA and any inline hashtags, or a translated variant. Length is counted
+    the same way adapt_for_platform counts it: X by weight, the rest by len().
     """
     specs = PLATFORM_LIMITS.get(platform)
     if not specs:
         return {"error": f"Unknown platform: {platform}"}
-    count = len(text)
+    count = _measurer(specs)(text)
     char_limit = specs["char_limit"]
     optimal = specs.get("optimal_limit")
     tags = _HASHTAG_RE.findall(text)
@@ -225,6 +359,7 @@ def check_copy(text, platform):
         "char_count": count,
         "char_limit": char_limit,
         "within_limit": count <= char_limit,
+        "count_method": specs.get("count_method", "code_points"),
         "optimal_limit": optimal,
         "within_optimal": (count <= optimal) if optimal else None,
         "hashtags_in_text": len(tags),
@@ -302,7 +437,7 @@ def main():
                              "+ 'link in bio'.")
     parser.add_argument("--hashtags", nargs="*", default=None,
                         help="Always-on hashtags, in priority order (extras past the "
-                             "platform's hashtag_limit are dropped)")
+                             "platform's hashtag_limit come back in hashtags_dropped)")
     parser.add_argument("--campaign-hashtags", nargs="*", default=None,
                         help="Campaign-specific hashtags, added after --hashtags")
     parser.add_argument("--primary-lang", default="en", help="Language of the source copy")
@@ -330,10 +465,7 @@ def main():
         return
     if args.sources:
         _ensure_utf8_stdout()
-        provenance = {name: {k: entry.get(k) for k in
-                             ("source", "checked", "confirmed", "differs", "unsourced", "notes")}
-                      for name, entry in _RAW_DATA["platforms"].items()}
-        print(json.dumps(provenance, indent=2, ensure_ascii=False))
+        print(json.dumps(_provenance(_RAW_DATA), indent=2, ensure_ascii=False))
         return
 
     if args.text is not None and args.text_file is not None:

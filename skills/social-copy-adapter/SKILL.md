@@ -18,10 +18,10 @@ Only one half of this job is a measurement. Keep them apart.
 
 | The script does (`scripts/adapt_copy.py`; same input, same output) | You do (judgment) |
 |---|---|
-| Counts characters against the platform limit | Rewrite for each platform's tone, structure and hook |
+| Counts length the way the platform does (X by weight, the rest by characters) against the limit | Rewrite for each platform's tone, structure and hook |
 | Reserves room for the CTA, then cuts mechanically at the last sentence that fits | Decide what to tighten or drop; a rewrite beats a cut |
 | Turns the CTA into the platform's mechanism (direct link, comment keyword, link in bio) | Choose the offer and the CTA wording |
-| Keeps up to a per-platform number of hashtags and says where they go (Instagram: first comment) | Choose which hashtags matter |
+| Keeps up to a per-platform number of hashtags, says where they go (Instagram: first comment) and lists the ones it left out | Choose which hashtags matter, and tell the writer which were dropped |
 | Structures a bilingual variant with a placeholder | Write the translation |
 | `--check`: measures finished text (length, hashtag count) | Claims, compliance, disclosure |
 
@@ -61,16 +61,16 @@ One variant per platform, from the table. Tone and shape, not just length: a 3,0
 | Platform | Tone | Limit (chars) | Hashtags: aim / script cap | Hashtags go | CTA |
 |---|---|---|---|---|---|
 | LinkedIn | Professional | 3,000 (hook inside the first 140) | 3-5 / 5 | end of post | direct link |
-| Instagram | Conversational | 2,200 | 20-30 / 30 | first comment | comment keyword, else link in bio |
-| X | Punchy, concise | 280 | 1-2 / 2 | inline | direct link |
+| Instagram | Conversational | 2,200 | 3-5 / 5 | first comment | comment keyword, else link in bio |
+| X | Punchy, concise | 280 (counted by weight: emoji and CJK 2, any URL 23) | 1-2 / 2 | inline | direct link |
 | Facebook | Casual | 63,206 (script cuts at 500) | 1-3 / 3 | inline | direct link |
 | YouTube | Description format | 5,000 | 3-5 / 5 | inline | direct link |
 | TikTok | Casual, trend-aware | 2,200 | 3-5 / 10 | inline | comment keyword, else link in bio |
-| Pinterest | Search-friendly description | 500 | 5-10 / 20 | inline | direct link |
-| Threads | Conversational | 500 | 1-3 / 3 | inline | direct link |
+| Pinterest | Search-friendly description | 800 | 5-10 / 20 | inline | direct link |
+| Threads | Conversational | 500 | 1 / 1 | inline | direct link |
 | Bluesky | Concise, community-first | 300 | 1-2 / 2 | tag facets | direct link |
 
-The numbers live in `platforms.json`, and not all of them are confirmed: run `--sources` before you tell anyone a limit is official. "Aim" is a working range from SocialForge's platform notes, not a platform rule; the script cap is what it keeps if you pass more.
+The numbers live in `platforms.json`, and not all of them are confirmed: run `--sources` before you tell anyone a limit is official. "Aim" is a working range from SocialForge's platform notes, not a platform rule; the script cap is how many hashtags it keeps. The rest come back in `hashtags_dropped`, so a cap never removes a tag without a record.
 
 Write the variant **without** the CTA and without hashtags. The script adds the CTA in the right mechanism and returns the hashtags separately; putting them in the text as well duplicates them.
 
@@ -98,7 +98,7 @@ python <skill-dir>/scripts/adapt_copy.py --text-file post.txt --platform x insta
     --hashtags "#Onboarding" "#SaaS"
 ```
 
-Run it once per distinct variant (each platform gets its own text), or once for several platforms when the text is the same. Read `within_limit`, `cta_mechanism`, `hashtags` and `first_comment`, and compare `copy` with what you wrote: if the body was shortened, the script cut it (see rule 4).
+Run it once per distinct variant (each platform gets its own text), or once for several platforms when the text is the same. Read `within_limit`, `cta_mechanism`, `hashtags`, `first_comment` and `hashtags_dropped`, and compare `copy` with what you wrote: if the body was shortened, the script cut it (see rule 4). On X, `char_count` is X's weighted count (`count_method` says `x_weighted`), so it is not the length of `copy`.
 
 For inline platforms the hashtags are a separate string, not part of `copy` or `char_count`. Assemble the final post yourself (`copy`, a blank line, `hashtags`), save it, and measure it:
 
@@ -137,7 +137,7 @@ Post: <name>
   linkedin   847 chars (limit 3000) ok | 4 hashtags (cap 5) | CTA: direct-link
   instagram  1203 chars (limit 2200) ok | 25 hashtags in first comment | CTA: comment-keyword
   x          267 chars (limit 280) ok | 2 hashtags inline | CTA: direct-link
-Cut by the script: none | Dropped hashtags: none | Not checked: banned phrases (none supplied)
+Cut by the script: none | Dropped hashtags (from hashtags_dropped): none | Not checked: banned phrases (none supplied)
 ```
 
 ## Craft rules
@@ -174,22 +174,24 @@ One platform prints that platform's object; several (or `all`) print `{"platform
 | Field | Meaning |
 |---|---|
 | `copy` | The adapted text: body (cut to fit if it had to be), a blank line, the rendered CTA |
-| `char_count`, `char_limit`, `within_limit` | Length of `copy` against the hard limit. `false` means over; shorten the CTA or the body |
+| `char_count`, `char_limit`, `within_limit` | Length of `copy` against the hard limit, counted the way `count_method` says. `false` means over; shorten the CTA or the body |
+| `count_method` | `code_points` (plain characters) or, for X, `x_weighted`: emoji and CJK count 2, every URL counts 23 |
 | `cta_mechanism`, `cta_rendered` | How the CTA was turned into the platform's mechanism (table in Step 3) |
 | `hashtags` | The hashtags to put in the post, joined by spaces, capped per platform. Empty where they go elsewhere |
 | `hashtag_placement`, `first_comment` | `inline`, `first_comment` or `tag_facets`; on Instagram the hashtags are in `first_comment` |
+| `hashtags_dropped` | The hashtags the platform's cap left out, in the order given; an empty list when none. Tell the writer which they were |
 | `fold_at`, `hook_visible` | The assumed "see more" position and the text before it (first 100 characters where none is set) |
 | `bilingual` | With `--secondary-lang`: `primary`, `secondary` (a placeholder), `mode`, `note` |
 
-`--check` returns `char_count`, `char_limit`, `within_limit`, `optimal_limit` and `within_optimal` (both `null` unless a platform has a working preference below its limit, as Facebook does), `hashtags_in_text`, `hashtag_limit`, `hashtags_within_limit` and `hook_visible`. It counts a hashtag as a `#` that is not glued to a word and has at least one letter, so `C#`, `page#top` and `#1` are not counted.
+`--check` returns `char_count`, `char_limit`, `within_limit`, `count_method`, `optimal_limit` and `within_optimal` (both `null` unless a platform has a working preference below its limit, as Facebook does), `hashtags_in_text`, `hashtag_limit`, `hashtags_within_limit` and `hook_visible`. It counts a hashtag as a `#` that is not glued to a word and has at least one letter, so `C#`, `page#top` and `#1` are not counted.
 
-**The limits are data.** `platforms.json` holds each platform's numbers and, per platform, a `source`, a `checked` date and three lists: `confirmed` (the source says this), `differs` (the source says something else; the number is kept and `notes` explains), and `unsourced`. Edit a number in `limits` and the script uses it. When a `source` is the text "SocialForge data, unsourced", this skill has no source for those numbers.
+**The limits are data.** `platforms.json` holds each platform's numbers and, per platform, a `source`, a `checked` date and three lists: `confirmed` (a primary page says this), `differs` (the page says something else; the number is kept and `notes` explains), and `unsourced`. `also_read` lists further primary pages that were read, each with what it says and the limits key it bears on. A top-level `counting` block records X's weighting rules, with the field names of twitter-text's own configuration. Edit a number in `limits` and the script uses it. When a `source` is the text "SocialForge data, unsourced", this skill has no source for those numbers, except any key an `also_read` entry carries. `--sources` prints all of it, with a `status` for every limit.
 
 ## What the script does not do
 
-- **It counts plain characters** (Python `len`). X counts URLs as 23, emoji as 2 and CJK characters as 2 each; Bluesky's limit is 300 graphemes. So `within_limit: true` on X is necessary but not sufficient for text with emoji or CJK (single emoji and CJK count low; long URLs and long emoji sequences count high), and an emoji sequence can make the count on Bluesky look larger than it is (the safe direction).
+- **Everything but X is counted in plain characters** (Python `len`). X is counted by weight, from twitter-text's own configuration: the text is normalised to NFC, then most characters weigh 1, emoji and CJK 2, and every URL that starts with `http://`, `https://` or `www.` weighs 23 however long it is. Three differences remain. An emoji sequence (a family emoji, a flag) is weighed code point by code point, so it counts more than X's 2 (the safe direction). A bare domain without `http://`, `https://` or `www.` is counted as plain text although X links it, so a long bare domain counts low. And Bluesky's limit is 300 graphemes where this counts code points, so an emoji sequence can make the count look larger than it is (also the safe direction). Threads counts an emoji as its number of UTF-8 bytes; the script counts it as 1, so it undercounts emoji on Threads and that is not implemented.
 - **`char_count` covers `copy` only.** Inline hashtags and the Instagram first comment are separate strings, so assemble the final post and run `--check`.
-- **Hashtags past the cap are dropped silently, in the order given.** Put the ones that must survive first, and tell the writer which were dropped.
+- **Hashtags past the cap are left out, in the order given, and listed in `hashtags_dropped`.** Put the ones that must survive first, and tell the writer which were dropped.
 - **The cut is mechanical.** It breaks at the last sentence end past halfway, or else mid-text with `...`. If the CTA alone nearly fills the limit, almost no body is left and `within_limit` can still be `false`; shorten the CTA.
 - **The limits are not all confirmed, and platforms change them.** Run `--sources`. For anything that matters, check the platform's current documentation.
 - **It does not translate, rewrite for tone, check banned phrases, or judge a claim.** The bilingual `secondary` is a placeholder, and nothing checks its length until you run `--check`.
