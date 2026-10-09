@@ -363,7 +363,7 @@ class TestPlatformBehaviour(unittest.TestCase):
 
     def test_result_has_the_documented_keys(self):
         out = hero.adapt_for_platform("Hi.", "x", ["#a"], "Go: https://example.com")
-        self.assertEqual(list(out), ["platform", "copy", "char_count", "char_limit", "within_limit",
+        self.assertEqual(list(out), ["platform", "copy", "post_text", "char_count", "post_char_count", "char_limit", "within_limit",
                                      "count_method", "cta_mechanism", "cta_rendered", "fold_at", "hook_visible",
                                      "hashtags", "hashtag_placement", "first_comment", "hashtags_dropped"])
 

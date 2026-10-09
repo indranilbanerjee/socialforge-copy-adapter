@@ -100,7 +100,7 @@ python <skill-dir>/scripts/adapt_copy.py --text-file post.txt --platform x insta
 
 Run it once per distinct variant (each platform gets its own text), or once for several platforms when the text is the same. Read `within_limit`, `cta_mechanism`, `hashtags`, `first_comment` and `hashtags_dropped`, and compare `copy` with what you wrote: if the body was shortened, the script cut it (see rule 4). On X, `char_count` is X's weighted count (`count_method` says `x_weighted`), so it is not the length of `copy`.
 
-For inline platforms the hashtags are a separate string, not part of `copy` or `char_count`. Assemble the final post yourself (`copy`, a blank line, `hashtags`), save it, and measure it:
+For inline platforms the hashtags are appended in `post_text` (`copy`, a blank line, `hashtags`), and `within_limit` measures that whole post; publish `post_text`. If you edit the post by hand afterwards, save it and measure it again:
 
 ```bash
 python <skill-dir>/scripts/adapt_copy.py --check --text-file final-x.txt --platform x
@@ -174,7 +174,8 @@ One platform prints that platform's object; several (or `all`) print `{"platform
 | Field | Meaning |
 |---|---|
 | `copy` | The adapted text: body (cut to fit if it had to be), a blank line, the rendered CTA |
-| `char_count`, `char_limit`, `within_limit` | Length of `copy` against the hard limit, counted the way `count_method` says. `false` means over; shorten the CTA or the body |
+| `post_text` | What to publish: `copy` plus the hashtags where the platform shows them in the post (not on Instagram, where they go in `first_comment`). Tags given without `#` get one |
+| `char_count`, `post_char_count`, `char_limit`, `within_limit` | `char_count` is `copy` alone; `post_char_count` and `within_limit` measure `post_text` against the hard limit, counted the way `count_method` says. `false` means over; shorten the CTA or the body |
 | `count_method` | `code_points` (plain characters) or, for X, `x_weighted`: emoji and CJK count 2, every URL counts 23 |
 | `cta_mechanism`, `cta_rendered` | How the CTA was turned into the platform's mechanism (table in Step 3) |
 | `hashtags` | The hashtags to put in the post, joined by spaces, capped per platform. Empty where they go elsewhere |
@@ -190,7 +191,7 @@ One platform prints that platform's object; several (or `all`) print `{"platform
 ## What the script does not do
 
 - **Everything but X is counted in plain characters** (Python `len`). X is counted by weight, from twitter-text's own configuration: the text is normalised to NFC, then most characters weigh 1, emoji and CJK 2, and every URL that starts with `http://`, `https://` or `www.` weighs 23 however long it is. Three differences remain. An emoji sequence (a family emoji, a flag) is weighed code point by code point, so it counts more than X's 2 (the safe direction). A bare domain without `http://`, `https://` or `www.` is counted as plain text although X links it, so a long bare domain counts low. And Bluesky's limit is 300 graphemes where this counts code points, so an emoji sequence can make the count look larger than it is (also the safe direction). Threads counts an emoji as its number of UTF-8 bytes; the script counts it as 1, so it undercounts emoji on Threads and that is not implemented.
-- **`char_count` covers `copy` only.** Inline hashtags and the Instagram first comment are separate strings, so assemble the final post and run `--check`.
+- **`within_limit` measures `post_text`, the copy plus inline hashtags.** Room for the kept hashtags is reserved before the body is cut. The Instagram first comment is a separate string and is not counted.
 - **Hashtags past the cap are left out, in the order given, and listed in `hashtags_dropped`.** Put the ones that must survive first, and tell the writer which were dropped.
 - **The cut is mechanical.** It breaks at the last sentence end past halfway, or else mid-text with `...`. If the CTA alone nearly fills the limit, almost no body is left and `within_limit` can still be `false`; shorten the CTA.
 - **The limits are not all confirmed, and platforms change them.** Run `--sources`. For anything that matters, check the platform's current documentation.

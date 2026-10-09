@@ -65,7 +65,9 @@ It prints (a real run, unedited):
     "x": {
       "platform": "x",
       "copy": "We cut our onboarding checklist from 14 steps to 6. New teams now reach their first dashboard in one sitting, and the median time to get there fell from 3 days to 4 hours.\n\nGet the checklist: https://example.com/checklist",
+      "post_text": "We cut our onboarding checklist from 14 steps to 6. New teams now reach their first dashboard in one sitting, and the median time to get there fell from 3 days to 4 hours.\n\nGet the checklist: https://example.com/checklist\n\n#Onboarding #SaaS",
       "char_count": 215,
+      "post_char_count": 234,
       "char_limit": 280,
       "within_limit": true,
       "count_method": "x_weighted",
@@ -83,7 +85,9 @@ It prints (a real run, unedited):
     "instagram": {
       "platform": "instagram",
       "copy": "We cut our onboarding checklist from 14 steps to 6. New teams now reach their first dashboard in one sitting, and the median time to get there fell from 3 days to 4 hours. The biggest change was removing every step that only existed to collect information we already had. If your setup guide has a step nobody can explain, start there.\n\nComment \"CHECKLIST\" and we'll send you the link.",
+      "post_text": "We cut our onboarding checklist from 14 steps to 6. New teams now reach their first dashboard in one sitting, and the median time to get there fell from 3 days to 4 hours. The biggest change was removing every step that only existed to collect information we already had. If your setup guide has a step nobody can explain, start there.\n\nComment \"CHECKLIST\" and we'll send you the link.",
       "char_count": 385,
+      "post_char_count": 385,
       "char_limit": 2200,
       "within_limit": true,
       "count_method": "code_points",
@@ -99,7 +103,9 @@ It prints (a real run, unedited):
     "linkedin": {
       "platform": "linkedin",
       "copy": "We cut our onboarding checklist from 14 steps to 6. New teams now reach their first dashboard in one sitting, and the median time to get there fell from 3 days to 4 hours. The biggest change was removing every step that only existed to collect information we already had. If your setup guide has a step nobody can explain, start there.\n\nGet the checklist: https://example.com/checklist",
+      "post_text": "We cut our onboarding checklist from 14 steps to 6. New teams now reach their first dashboard in one sitting, and the median time to get there fell from 3 days to 4 hours. The biggest change was removing every step that only existed to collect information we already had. If your setup guide has a step nobody can explain, start there.\n\nGet the checklist: https://example.com/checklist\n\n#Onboarding #SaaS #CustomerSuccess",
       "char_count": 385,
+      "post_char_count": 421,
       "char_limit": 3000,
       "within_limit": true,
       "count_method": "code_points",
@@ -118,7 +124,7 @@ It prints (a real run, unedited):
 
 What happened, field by field:
 
-- **X.** The post did not fit once the CTA's room was reserved, so the script cut at the last sentence that fit and kept the CTA as a direct link. `char_count` is X's weighted count (`count_method` is `x_weighted`): the CTA's URL counts 23 whatever its length. It also kept two of the three hashtags, X's cap in the limits table, and listed `#CustomerSuccess` in `hashtags_dropped`, so the drop is on the record. That cut is mechanical. In real use you rewrite the X version yourself, run it again, and ship the script's cut only if you accept it.
+- **X.** The post did not fit once the CTA's room was reserved, so the script cut at the last sentence that fit and kept the CTA as a direct link. `char_count` is X's weighted count (`count_method` is `x_weighted`): the CTA's URL counts 23 whatever its length. It also kept two of the three hashtags, X's cap in the limits table, reserved their room before cutting, and appended them in `post_text`, which is what `within_limit` measures; `#CustomerSuccess` is listed in `hashtags_dropped`, so the drop is on the record. That cut is mechanical. In real use you rewrite the X version yourself, run it again, and ship the script's cut only if you accept it.
 - **Instagram.** The URL is gone from the caption, replaced by the comment-keyword ask, and all three hashtags are in `first_comment`.
 - **LinkedIn.** Untouched. `hook_visible` is the text before the assumed "see more" fold.
 
