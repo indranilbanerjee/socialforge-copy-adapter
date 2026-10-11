@@ -92,6 +92,8 @@ A keyword is ignored on link platforms; asking for a comment where the link simp
 
 ### Step 4. Run the script
 
+`<skill-dir>` is the folder that contains this SKILL.md. Run the script with Python 3.10 or newer: `python`, or `python3` where `python` is not found (macOS, many Linux systems).
+
 ```bash
 python <skill-dir>/scripts/adapt_copy.py --text-file post.txt --platform x instagram linkedin \
     --cta "Get the checklist: https://example.com/checklist" --cta-keyword CHECKLIST \
