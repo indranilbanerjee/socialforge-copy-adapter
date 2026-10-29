@@ -152,7 +152,7 @@ What happened, field by field:
 | X | 280 | confirmed (X docs and twitter-text's configuration); counted by weight: URLs 23, emoji and CJK 2 each |
 | Facebook | 63,206 | unsourced (script cuts at 500 anyway) |
 | YouTube | 5,000 | confirmed (YouTube help page) |
-| TikTok | 2,200 | unsourced; third-party pages report 4,000, unconfirmed here |
+| TikTok | 2,200 | unsourced: TikTok's posting reference, quoted by the search index, caps a video caption at 2,200; the 4,000 other pages give is a photo post's description |
 | Pinterest | 800 | confirmed (Pinterest help page; this was 500 in SocialForge's data) |
 | Threads | 500 | confirmed (Threads API docs); emoji count as UTF-8 bytes there, which the script does not model |
 | Bluesky | 300 | confirmed (300 graphemes, from the post lexicon) |
